@@ -1,19 +1,16 @@
-// Copyright (C) 2018
+// Copyright 2018 Cryptape Technology LLC.
 //
-// This file is part of libsm.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// libsm is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// libsm is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with libsm.  If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use super::ecc::*;
 use super::field::FieldElem;
@@ -34,48 +31,53 @@ pub struct Signature {
 }
 
 impl Signature {
+    pub fn new(r_bytes: &[u8], s_bytes: &[u8]) -> Self {
+        let r = BigUint::from_bytes_be(r_bytes);
+        let s = BigUint::from_bytes_be(s_bytes);
+        Signature { r, s }
+    }
+
     pub fn der_decode(buf: &[u8]) -> Result<Signature, yasna::ASN1Error> {
         let (r, s) = yasna::parse_der(buf, |reader| {
             reader.read_sequence(|reader| {
                 let r = reader.next().read_biguint()?;
                 let s = reader.next().read_biguint()?;
-                return Ok((r, s));
+                Ok((r, s))
             })
         })?;
         Ok(Signature { r, s })
     }
 
-    pub fn der_decode_raw(buf: &[u8]) -> Result<Signature, bool> {
+    pub fn der_decode_raw(buf: &[u8]) -> Result<Signature, ()> {
         if buf[0] != 0x02 {
-            return Err(true);
+            return Err(());
         }
         let r_len: usize = buf[1] as usize;
         if buf.len() <= r_len + 4 {
-            return Err(true);
+            return Err(());
         }
         let r = BigUint::from_bytes_be(&buf[2..2 + r_len]);
 
         let buf = &buf[2 + r_len..];
         if buf[0] != 0x02 {
-            return Err(true);
+            return Err(());
         }
         let s_len: usize = buf[1] as usize;
         if buf.len() < s_len + 2 {
-            return Err(true);
+            return Err(());
         }
         let s = BigUint::from_bytes_be(&buf[2..2 + s_len]);
 
-        return Ok(Signature { r, s });
+        Ok(Signature { r, s })
     }
 
     pub fn der_encode(&self) -> Vec<u8> {
-        let der = yasna::construct_der(|writer| {
+        yasna::construct_der(|writer| {
             writer.write_sequence(|writer| {
                 writer.next().write_biguint(&self.r);
                 writer.next().write_biguint(&self.s);
             })
-        });
-        return der;
+        })
     }
 
     #[inline]
@@ -178,10 +180,10 @@ impl SigCtx {
 
             let mut s2_1 = &r * sk;
             if s2_1 < k {
-                s2_1 = s2_1 + curve.get_n();
+                s2_1 += curve.get_n();
             }
             let mut s2 = s2_1 - k;
-            s2 = s2 % curve.get_n();
+            s2 %= curve.get_n();
             let s2 = curve.get_n() - s2;
 
             let s = (s1 * s2) % curve.get_n();
@@ -229,11 +231,7 @@ impl SigCtx {
         let r_ = (e + x_1) % curve.get_n();
 
         // check R == r?
-        if r_ == *sig.get_r() {
-            return true;
-        }
-
-        return false;
+        r_ == *sig.get_r()
     }
 
     pub fn new_keypair(&self) -> (Point, BigUint) {
@@ -249,7 +247,7 @@ impl SigCtx {
             pk = curve.g_mul(&sk);
         }
 
-        return (pk, sk);
+        (pk, sk)
     }
 
     pub fn pk_from_sk(&self, sk: &BigUint) -> Point {
@@ -257,12 +255,10 @@ impl SigCtx {
         if *sk >= *curve.get_n() || *sk == BigUint::zero() {
             panic!("invalid seckey");
         }
-        let pk = curve.mul(&sk, &curve.generator());
-
-        return pk;
+        curve.mul(&sk, &curve.generator())
     }
 
-    pub fn load_pubkey(&self, buf: &[u8]) -> Result<Point, bool> {
+    pub fn load_pubkey(&self, buf: &[u8]) -> Result<Point, ()> {
         self.curve.bytes_to_point(buf)
     }
 
@@ -270,15 +266,16 @@ impl SigCtx {
         self.curve.point_to_bytes(p, compress)
     }
 
-    pub fn load_seckey(&self, buf: &[u8]) -> Result<BigUint, bool> {
+    pub fn load_seckey(&self, buf: &[u8]) -> Result<BigUint, ()> {
         if buf.len() != 32 {
-            return Err(true);
+            return Err(());
         }
         let sk = BigUint::from_bytes_be(buf);
         if sk > *self.curve.get_n() {
-            return Err(true);
+            Err(())
+        } else {
+            Ok(sk)
         }
-        return Ok(sk);
     }
 
     pub fn serialize_seckey(&self, x: &BigUint) -> Vec<u8> {
@@ -287,6 +284,12 @@ impl SigCtx {
         }
         let x = FieldElem::from_biguint(x);
         x.to_bytes()
+    }
+}
+
+impl Default for SigCtx {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

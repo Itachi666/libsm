@@ -1,19 +1,16 @@
-// Copyright (C) 2018
+// Copyright 2018 Cryptape Technology LLC.
 //
-// This file is part of libsm.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// libsm is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// libsm is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with libsm.  If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 //
 // Sample 1
@@ -55,11 +52,10 @@ fn p1(x: u32) -> u32 {
 
 #[inline(always)]
 fn get_u32_be(b: &[u8; 64], i: usize) -> u32 {
-    let n: u32 = (b[i] as u32) << 24
-        | (b[i + 1] as u32) << 16
-        | (b[i + 2] as u32) << 8
-        | (b[i + 3] as u32) << 0;
-    n
+    u32::from(b[i]) << 24
+        | u32::from(b[i + 1]) << 16
+        | u32::from(b[i + 2]) << 8
+        | u32::from(b[i + 3])
 }
 
 pub struct Sm3Hash {
@@ -72,8 +68,14 @@ impl Sm3Hash {
     pub fn new(data: &[u8]) -> Sm3Hash {
         let mut hash = Sm3Hash {
             digest: [
-                0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600, 0xa96f30bc, 0x163138aa, 0xe38dee4d,
-                0xb0fb0e4e,
+                0x7380_166f,
+                0x4914_b2b9,
+                0x1724_42d7,
+                0xda8a_0600,
+                0xa96f_30bc,
+                0x1631_38aa,
+                0xe38d_ee4d,
+                0xb0fb_0e4e,
             ],
             length: (data.len() << 3) as u64,
             unhandle_msg: Vec::new(),
@@ -103,9 +105,9 @@ impl Sm3Hash {
             output[i * 4] = (self.digest[i] >> 24) as u8;
             output[i * 4 + 1] = (self.digest[i] >> 16) as u8;
             output[i * 4 + 2] = (self.digest[i] >> 8) as u8;
-            output[i * 4 + 3] = (self.digest[i] >> 0) as u8;
+            output[i * 4 + 3] = self.digest[i] as u8;
 
-            i = i + 1;
+            i += 1;
         }
         output
     }
@@ -124,7 +126,7 @@ impl Sm3Hash {
         self.unhandle_msg.push((self.length >> 24 & 0xff) as u8);
         self.unhandle_msg.push((self.length >> 16 & 0xff) as u8);
         self.unhandle_msg.push((self.length >> 8 & 0xff) as u8);
-        self.unhandle_msg.push((self.length >> 0 & 0xff) as u8);
+        self.unhandle_msg.push((self.length & 0xff) as u8);
 
         if self.unhandle_msg.len() % 64 != 0 {
             panic!("-------SM3 Pad: error msgLen ------");
@@ -140,7 +142,7 @@ impl Sm3Hash {
         while i < 16 {
             w[i] = get_u32_be(&buffer, i * 4);
 
-            i = i + 1;
+            i += 1;
         }
 
         i = 16;
@@ -149,24 +151,24 @@ impl Sm3Hash {
                 ^ w[i - 13].rotate_left(7)
                 ^ w[i - 6];
 
-            i = i + 1;
+            i += 1;
         }
 
         i = 0;
         while i < 64 {
             w1[i] = w[i] ^ w[i + 4];
 
-            i = i + 1;
+            i += 1;
         }
 
-        let mut a = self.digest[0] as u32;
-        let mut b = self.digest[1] as u32;
-        let mut c = self.digest[2] as u32;
-        let mut d = self.digest[3] as u32;
-        let mut e = self.digest[4] as u32;
-        let mut f = self.digest[5] as u32;
-        let mut g = self.digest[6] as u32;
-        let mut h = self.digest[7] as u32;
+        let mut ra = self.digest[0];
+        let mut rb = self.digest[1];
+        let mut rc = self.digest[2];
+        let mut rd = self.digest[3];
+        let mut re = self.digest[4];
+        let mut rf = self.digest[5];
+        let mut rg = self.digest[6];
+        let mut rh = self.digest[7];
         let mut ss1: u32;
         let mut ss2: u32;
         let mut tt1: u32;
@@ -174,70 +176,68 @@ impl Sm3Hash {
 
         i = 0;
         while i < 16 {
-            ss1 = a
+            ss1 = ra
                 .rotate_left(12)
-                .wrapping_add(e)
-                .wrapping_add(0x79cc4519u32.rotate_left(i as u32))
+                .wrapping_add(re)
+                .wrapping_add(0x79cc_4519u32.rotate_left(i as u32))
                 .rotate_left(7);
-            ss2 = ss1 ^ a.rotate_left(12);
-            tt1 = ff0(a, b, c)
-                .wrapping_add(d)
+            ss2 = ss1 ^ ra.rotate_left(12);
+            tt1 = ff0(ra, rb, rc)
+                .wrapping_add(rd)
                 .wrapping_add(ss2)
                 .wrapping_add(w1[i]);
-            tt2 = gg0(e, f, g)
-                .wrapping_add(h)
+            tt2 = gg0(re, rf, rg)
+                .wrapping_add(rh)
                 .wrapping_add(ss1)
                 .wrapping_add(w[i]);
-            d = c;
-            c = b.rotate_left(9);
-            b = a;
-            a = tt1;
-            h = g;
-            g = f.rotate_left(19);
-            f = e;
-            e = p0(tt2);
+            rd = rc;
+            rc = rb.rotate_left(9);
+            rb = ra;
+            ra = tt1;
+            rh = rg;
+            rg = rf.rotate_left(19);
+            rf = re;
+            re = p0(tt2);
 
-            i = i + 1;
-
-            //            println!("{} {:8x} {:8x} {:8x} {:8x} {:8x} {:8x} {:8x} {:8x} ", i, a, b, c, d, e, f, g, h);
+            i += 1;
         }
 
         i = 16;
         while i < 64 {
-            ss1 = a
+            ss1 = ra
                 .rotate_left(12)
-                .wrapping_add(e)
-                .wrapping_add(0x7a879d8au32.rotate_left(i as u32))
+                .wrapping_add(re)
+                .wrapping_add(0x7a87_9d8au32.rotate_left(i as u32))
                 .rotate_left(7);
-            ss2 = ss1 ^ a.rotate_left(12);
-            tt1 = ff1(a, b, c)
-                .wrapping_add(d)
+            ss2 = ss1 ^ ra.rotate_left(12);
+            tt1 = ff1(ra, rb, rc)
+                .wrapping_add(rd)
                 .wrapping_add(ss2)
                 .wrapping_add(w1[i]);
-            tt2 = gg1(e, f, g)
-                .wrapping_add(h)
+            tt2 = gg1(re, rf, rg)
+                .wrapping_add(rh)
                 .wrapping_add(ss1)
                 .wrapping_add(w[i]);
-            d = c;
-            c = b.rotate_left(9);
-            b = a;
-            a = tt1;
-            h = g;
-            g = f.rotate_left(19);
-            f = e;
-            e = p0(tt2);
+            rd = rc;
+            rc = rb.rotate_left(9);
+            rb = ra;
+            ra = tt1;
+            rh = rg;
+            rg = rf.rotate_left(19);
+            rf = re;
+            re = p0(tt2);
 
-            i = i + 1;
+            i += 1;
         }
 
-        self.digest[0] = a ^ self.digest[0];
-        self.digest[1] = b ^ self.digest[1];
-        self.digest[2] = c ^ self.digest[2];
-        self.digest[3] = d ^ self.digest[3];
-        self.digest[4] = e ^ self.digest[4];
-        self.digest[5] = f ^ self.digest[5];
-        self.digest[6] = g ^ self.digest[6];
-        self.digest[7] = h ^ self.digest[7];
+        self.digest[0] ^= ra;
+        self.digest[1] ^= rb;
+        self.digest[2] ^= rc;
+        self.digest[3] ^= rd;
+        self.digest[4] ^= re;
+        self.digest[5] ^= rf;
+        self.digest[6] ^= rg;
+        self.digest[7] ^= rh;
     }
 }
 
