@@ -17,6 +17,7 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use num_bigint::BigUint;
 use num_traits::Num;
+use sm2::error::Sm2Error;
 use std::io::Cursor;
 
 pub struct FieldCtx {
@@ -239,7 +240,7 @@ impl FieldCtx {
     }
 
     // Square root of a field element
-    pub fn sqrt(&self, g: &FieldElem) -> Result<FieldElem, ()> {
+    pub fn sqrt(&self, g: &FieldElem) -> Result<FieldElem, Sm2Error> {
         // p = 4 * u + 3
         // u = u + 1
         let u = BigUint::from_str_radix(
@@ -252,7 +253,7 @@ impl FieldCtx {
         if self.square(&y) == *g {
             Ok(y)
         } else {
-            Err(())
+            Err(Sm2Error::FieldSqrtError)
         }
     }
 }
@@ -461,8 +462,7 @@ impl FieldElem {
 mod tests {
     use super::*;
 
-    use rand::os::OsRng;
-    use rand::Rng;
+    use rand::RngCore;
 
     #[test]
     fn test_add() {
@@ -488,7 +488,7 @@ mod tests {
     }
 
     fn rand_elem() -> FieldElem {
-        let mut rng = OsRng::new().unwrap();
+        let mut rng = rand::thread_rng();
         let mut buf: [u32; 8] = [0; 8];
         for v in buf.iter_mut().take(8) {
             *v = rng.next_u32();

@@ -16,19 +16,16 @@ use super::field::*;
 use num_bigint::BigUint;
 use num_integer::Integer;
 use num_traits::*;
-
-use rand::os::OsRng;
-use rand::Rng;
+use rand::RngCore;
 
 pub struct EccCtx {
     fctx: FieldCtx,
     a: FieldElem,
     b: FieldElem,
     n: BigUint,
-    inv2: FieldElem,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Point {
     pub x: FieldElem,
     pub y: FieldElem,
@@ -77,7 +74,6 @@ lazy_static! {
 
 impl EccCtx {
     pub fn new() -> EccCtx {
-        let fctx = FieldCtx::new();
         EccCtx {
             fctx: FieldCtx::new(),
             a: FieldElem::new([
@@ -105,7 +101,6 @@ impl EccCtx {
                 16,
             )
             .unwrap(),
-            inv2: fctx.inv(&FieldElem::from_num(2)),
         }
     }
 
@@ -136,24 +131,22 @@ impl EccCtx {
 
         let rn = self.get_n().clone();
 
-        let two = BigUint::from_u32(2).unwrap();
-
         while ru != BigUint::zero() {
             if ru.is_even() {
-                ru /= &two;
+                ru >>= 1;
                 if ra.is_even() {
-                    ra /= &two;
+                    ra >>= 1;
                 } else {
-                    ra = (ra + &rn) / &two;
+                    ra = (ra + &rn) >> 1;
                 }
             }
 
             if rv.is_even() {
-                rv /= &two;
+                rv >>= 1;
                 if rc.is_even() {
-                    rc /= &two;
+                    rc >>= 1;
                 } else {
-                    rc = (rc + &rn) / &two;
+                    rc = (rc + &rn) >> 1;
                 }
             }
 
@@ -176,19 +169,19 @@ impl EccCtx {
         rc
     }
 
-    pub fn new_point(&self, x: &FieldElem, y: &FieldElem) -> Result<Point, String> {
+    pub fn new_point(&self, x: &FieldElem, y: &FieldElem) -> Result<Point, Sm2Error> {
         let ctx = &self.fctx;
 
         // Check if (x, y) is a valid point on the curve(affine projection)
         // y^2 = x^3 + a * x + b
-        let lhs = ctx.mul(&y, &y);
+        let lhs = ctx.mul(y, y);
 
-        let x_cubic = ctx.mul(&x, &ctx.mul(&x, &x));
-        let ax = ctx.mul(&x, &self.a);
+        let x_cubic = ctx.mul(x, &ctx.mul(x, x));
+        let ax = ctx.mul(x, &self.a);
         let rhs = ctx.add(&self.b, &ctx.add(&x_cubic, &ax));
 
         if !lhs.eq(&rhs) {
-            return Err(String::from("invalid point"));
+            return Err(Sm2Error::NotOnCurve);
         }
 
         let p = Point {
@@ -263,7 +256,7 @@ impl EccCtx {
 
         match self.new_point(&x, &y) {
             Ok(p) => p,
-            Err(m) => panic!(m),
+            Err(m) => panic!("{:?}", m),
         }
     }
 
@@ -291,10 +284,11 @@ impl EccCtx {
         let neg_y = self.fctx.neg(&p.y);
         match self.new_jacobian(&p.x, &neg_y, &p.z) {
             Ok(neg_p) => neg_p,
-            Err(e) => panic!(e),
+            Err(e) => panic!("{}", e),
         }
     }
 
+    //add-1998-cmo-2 curve_add 13m+4s
     pub fn add(&self, p1: &Point, p2: &Point) -> Point {
         if p1.is_zero() {
             return p2.clone();
@@ -302,36 +296,35 @@ impl EccCtx {
             return p1.clone();
         }
 
+        if p1 == p2 {
+            return self.double(p1);
+        }
+
         let ctx = &self.fctx;
 
-        //if self.eq(&p1, &p2) {
-        //    return self.double(p1);
-        //}
+        let z1z1 = ctx.square(&p1.z);
+        let z2z2 = ctx.square(&p2.z);
+        let u1 = ctx.mul(&p1.x, &z2z2);
+        let u2 = ctx.mul(&p2.x, &z1z1);
+        let s1 = ctx.mul(&p1.y, &ctx.mul(&p2.z, &z2z2));
+        let s2 = ctx.mul(&p2.y, &ctx.mul(&p1.z, &z1z1));
 
-        let lam1 = ctx.mul(&p1.x, &ctx.square(&p2.z));
-        let lam2 = ctx.mul(&p2.x, &ctx.square(&p1.z));
-        let lam3 = ctx.sub(&lam1, &lam2);
+        let h = ctx.sub(&u2, &u1);
+        let hh = ctx.square(&h);
+        let hhh = ctx.mul(&h, &hh);
+        let r = ctx.sub(&s2, &s1);
+        let v = ctx.mul(&u1, &hh);
 
-        let lam4 = ctx.mul(&p1.y, &ctx.cubic(&p2.z));
-        let lam5 = ctx.mul(&p2.y, &ctx.cubic(&p1.z));
-        let lam6 = ctx.sub(&lam4, &lam5);
-
-        let lam7 = ctx.add(&lam1, &lam2);
-        let lam8 = ctx.add(&lam4, &lam5);
-
-        let x3 = ctx.sub(&ctx.square(&lam6), &ctx.mul(&lam7, &ctx.square(&lam3)));
-
-        let lam9 = ctx.sub(
-            &ctx.mul(&lam7, &ctx.square(&lam3)),
-            &ctx.mul(&FieldElem::from_num(2), &x3),
+        let x3 = ctx.sub(
+            &ctx.sub(&ctx.square(&r), &hhh),
+            &ctx.mul(&FieldElem::from_num(2), &v),
         );
 
-        let y3 = ctx.mul(
-            &self.inv2,
-            &ctx.sub(&ctx.mul(&lam9, &lam6), &ctx.mul(&lam8, &ctx.cubic(&lam3))),
-        );
+        let rvx3 = ctx.mul(&r, &ctx.sub(&v, &x3));
+        let s1hhh = ctx.mul(&s1, &hhh);
 
-        let z3 = ctx.mul(&p1.z, &ctx.mul(&p2.z, &lam3));
+        let y3 = ctx.sub(&rvx3, &s1hhh);
+        let z3 = ctx.mul(&p1.z, &ctx.mul(&p2.z, &h));
 
         Point {
             x: x3,
@@ -340,23 +333,38 @@ impl EccCtx {
         }
     }
 
+    //dbl-1998-cmo-2 9m+6s
+    // XX = X12
+    // YY = Y12
+    // ZZ = Z12
+    // S = 4*X1*YY
+    // M = 3*XX+a*ZZ2
+    // T = M2-2*S
+    // X3 = T
+    // Y3 = M*(S-T)-8*YY2
+    // Z3 = 2*Y1*Z1
     pub fn double(&self, p: &Point) -> Point {
-        let ctx = &self.fctx;
-        // λ1 = 3 * x1^2 + a * z1^4
-        let lam1 = ctx.add(
-            &ctx.mul(&FieldElem::from_num(3), &ctx.square(&p.x)),
-            &ctx.mul(&self.a, &ctx.square(&ctx.square(&p.z))),
-        );
-        // λ2 = 4 * x1 * y1^2
-        let lam2 = &ctx.mul(&FieldElem::from_num(4), &ctx.mul(&p.x, &ctx.square(&p.y)));
-        // λ3 = 8 * y1^4
-        let lam3 = &ctx.mul(&FieldElem::from_num(8), &ctx.square(&ctx.square(&p.y)));
+        if p.is_zero() {
+            return p.clone();
+        }
 
-        // x3 = λ1^2 - 2 * λ2
-        let x3 = ctx.sub(&ctx.square(&lam1), &ctx.mul(&FieldElem::from_num(2), &lam2));
-        // y3 = λ1 * (λ2 - x3) - λ3
-        let y3 = ctx.sub(&ctx.mul(&lam1, &ctx.sub(&lam2, &x3)), &lam3);
-        // z3 = 2 * y1 * z1
+        let ctx = &self.fctx;
+
+        let xx = ctx.square(&p.x);
+        let yy = ctx.square(&p.y);
+        let zz = ctx.square(&p.z);
+        let yy8 = ctx.mul(&FieldElem::from_num(8), &ctx.square(&yy));
+
+        let s = ctx.mul(&FieldElem::from_num(4), &ctx.mul(&p.x, &yy));
+        let m = ctx.add(
+            &ctx.mul(&FieldElem::from_num(3), &xx),
+            &ctx.mul(&self.a, &ctx.square(&zz)),
+        );
+
+        let x3 = ctx.sub(&ctx.square(&m), &ctx.mul(&FieldElem::from_num(2), &s));
+
+        let y3 = ctx.sub(&ctx.mul(&m, &ctx.sub(&s, &x3)), &yy8);
+
         let z3 = ctx.mul(&FieldElem::from_num(2), &ctx.mul(&p.y, &p.z));
 
         Point {
@@ -386,7 +394,7 @@ impl EccCtx {
             q = self.double(&q);
 
             if (m[index] >> bit) & 0x01 != 0 {
-                q = self.add(&q, &p);
+                q = self.add(&q, p);
 
                 // q = self.double(&q0);
             }
@@ -448,7 +456,7 @@ impl EccCtx {
     }
 
     pub fn random_uint(&self) -> BigUint {
-        let mut rng = OsRng::new().unwrap();
+        let mut rng = rand::thread_rng();
         let mut buf: [u8; 32] = [0; 32];
 
         let mut ret;
@@ -485,7 +493,7 @@ impl EccCtx {
         ret
     }
 
-    pub fn bytes_to_point(&self, b: &[u8]) -> Result<Point, ()> {
+    pub fn bytes_to_point(&self, b: &[u8]) -> Result<Point, Sm2Error> {
         let ctx = &self.fctx;
 
         if b.len() == 33 {
@@ -495,7 +503,7 @@ impl EccCtx {
             } else if b[0] == 0x03 {
                 y_q = 1
             } else {
-                return Err(());
+                return Err(Sm2Error::InvalidPublic);
             }
 
             let x = FieldElem::from_bytes(&b[1..]);
@@ -505,26 +513,22 @@ impl EccCtx {
             let y_2 = ctx.add(&self.b, &ctx.add(&x_cubic, &ax));
 
             let mut y = self.fctx.sqrt(&y_2)?;
+
             if y.get_value(7) & 0x01 != y_q {
                 y = self.fctx.neg(&y);
             }
 
-            match self.new_point(&x, &y) {
-                Ok(p) => Ok(p),
-                Err(_) => Err(()),
-            }
+            self.new_point(&x, &y)
         } else if b.len() == 65 {
             if b[0] != 0x04 {
-                return Err(());
+                return Err(Sm2Error::InvalidPublic);
             }
             let x = FieldElem::from_bytes(&b[1..33]);
             let y = FieldElem::from_bytes(&b[33..65]);
-            match self.new_point(&x, &y) {
-                Ok(p) => Ok(p),
-                Err(_) => Err(()),
-            }
+
+            self.new_point(&x, &y)
         } else {
-            Err(())
+            Err(Sm2Error::InvalidPublic)
         }
     }
 }
@@ -541,6 +545,7 @@ impl Point {
     }
 }
 
+use sm2::error::Sm2Error;
 use std::fmt;
 
 impl fmt::Display for Point {
@@ -550,7 +555,12 @@ impl fmt::Display for Point {
             write!(f, "(O)")
         } else {
             let (x, y) = curve.to_affine(self);
-            write!(f, "(x = {}, y = {})", x.to_str(10), y.to_str(10))
+            write!(
+                f,
+                "(x = 0x{:0>64}, y = 0x{:0>64})",
+                x.to_str(16),
+                y.to_str(16)
+            )
         }
     }
 }
@@ -571,6 +581,27 @@ mod tests {
 
         assert!(curve.eq(&g, &new_g));
         assert!(zero.is_zero());
+
+        let double_g = curve.double(&g); //  2 * g
+        let add_g = curve.add(&g, &g); // g + g
+        assert!(curve.eq(&add_g, &double_g));
+    }
+
+    #[test]
+    fn test_point_add() {
+        let ecctx = EccCtx::new();
+        let g = ecctx.generator();
+        let g2 = ecctx.double(&g);
+
+        println!("{}", ecctx.add(&g, &g2));
+    }
+
+    #[test]
+    fn test_point_double() {
+        let ecctx = EccCtx::new();
+        let g = ecctx.generator();
+
+        println!("{}", ecctx.double(&g));
     }
 
     #[test]
@@ -647,5 +678,43 @@ mod tests {
         let g_bytes_comp = curve.point_to_bytes(&g, true);
         let new_g = curve.bytes_to_point(&g_bytes_comp[..]).unwrap();
         assert!(curve.eq(&g, &new_g));
+    }
+}
+
+#[cfg(feature = "internal_benches")]
+mod internal_benches {
+    use sm2::ecc::EccCtx;
+    use sm2::field::FieldElem;
+    extern crate test;
+
+    #[bench]
+    fn sm2_inv_bench(bench: &mut test::Bencher) {
+        let ecctx = EccCtx::new();
+        let fe = FieldElem::from_num(2);
+        bench.iter(|| {
+            let _ = ecctx.fctx.inv(&fe);
+        });
+    }
+
+    #[bench]
+    fn sm2_point_add_bench(bench: &mut test::Bencher) {
+        let ecctx = EccCtx::new();
+        let g = ecctx.generator();
+        let g2 = ecctx.double(&g);
+
+        bench.iter(|| {
+            ecctx.add(&g, &g2);
+        });
+    }
+
+    #[bench]
+    fn sm2_point_double_bench(bench: &mut test::Bencher) {
+        let ecctx = EccCtx::new();
+        let g = ecctx.generator();
+        let g2 = ecctx.double(&g);
+
+        bench.iter(|| {
+            ecctx.double(&g2);
+        });
     }
 }

@@ -21,6 +21,8 @@ use sm3::hash::Sm3Hash;
 use yasna;
 
 use byteorder::{BigEndian, WriteBytesExt};
+use sm2::error::Sm2Error;
+use std::fmt;
 
 pub type Pubkey = Point;
 pub type Seckey = BigUint;
@@ -48,23 +50,23 @@ impl Signature {
         Ok(Signature { r, s })
     }
 
-    pub fn der_decode_raw(buf: &[u8]) -> Result<Signature, ()> {
+    pub fn der_decode_raw(buf: &[u8]) -> Result<Signature, Sm2Error> {
         if buf[0] != 0x02 {
-            return Err(());
+            return Err(Sm2Error::InvalidDer);
         }
         let r_len: usize = buf[1] as usize;
         if buf.len() <= r_len + 4 {
-            return Err(());
+            return Err(Sm2Error::InvalidDer);
         }
         let r = BigUint::from_bytes_be(&buf[2..2 + r_len]);
 
         let buf = &buf[2 + r_len..];
         if buf[0] != 0x02 {
-            return Err(());
+            return Err(Sm2Error::InvalidDer);
         }
         let s_len: usize = buf[1] as usize;
         if buf.len() < s_len + 2 {
-            return Err(());
+            return Err(Sm2Error::InvalidDer);
         }
         let s = BigUint::from_bytes_be(&buf[2..2 + s_len]);
 
@@ -88,6 +90,17 @@ impl Signature {
     #[inline]
     pub fn get_s(&self) -> &BigUint {
         &self.s
+    }
+}
+
+impl fmt::Display for Signature {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "r = 0x{:0>64}, s = 0x{:0>64}",
+            self.r.to_str_radix(16),
+            self.s.to_str_radix(16)
+        )
     }
 }
 
@@ -141,10 +154,54 @@ impl SigCtx {
 
         let mut prepended_msg: Vec<u8> = Vec::new();
         prepended_msg.extend_from_slice(&z_a[..]);
-        prepended_msg.extend_from_slice(&msg[..]);
+        prepended_msg.extend_from_slice(msg);
 
         let mut hasher = Sm3Hash::new(&prepended_msg[..]);
         hasher.get_hash()
+    }
+
+    pub fn recid_combine(&self, id: &str, pk: &Point, msg: &[u8]) -> Vec<u8> {
+        let curve = &self.curve;
+
+        let mut prepend: Vec<u8> = Vec::new();
+        if id.len() * 8 > 65535 {
+            panic!("ID is too long.");
+        }
+        prepend
+            .write_u16::<BigEndian>((id.len() * 8) as u16)
+            .unwrap();
+        for c in id.bytes() {
+            prepend.push(c);
+        }
+
+        let mut a = curve.get_a().to_bytes();
+        let mut b = curve.get_b().to_bytes();
+
+        prepend.append(&mut a);
+        prepend.append(&mut b);
+
+        let (x_g, y_g) = curve.to_affine(&curve.generator());
+        let (mut x_g, mut y_g) = (x_g.to_bytes(), y_g.to_bytes());
+        prepend.append(&mut x_g);
+        prepend.append(&mut y_g);
+
+        let (x_a, y_a) = curve.to_affine(pk);
+        let (mut x_a, mut y_a) = (x_a.to_bytes(), y_a.to_bytes());
+        prepend.append(&mut x_a);
+        prepend.append(&mut y_a);
+
+        let mut hasher = Sm3Hash::new(&prepend[..]);
+        let z_a = hasher.get_hash();
+
+        // Z_A = HASH_256(ID_LEN || ID || x_G || y_G || x_A || y_A)
+
+        // e = HASH_256(Z_A || M)
+
+        let mut prepended_msg: Vec<u8> = Vec::new();
+        prepended_msg.extend_from_slice(&z_a[..]);
+        prepended_msg.extend_from_slice(msg);
+
+        prepended_msg
     }
 
     pub fn sign(&self, msg: &[u8], sk: &BigUint, pk: &Point) -> Signature {
@@ -165,6 +222,7 @@ impl SigCtx {
             // k = rand()
             // (x_1, y_1) = g^kg
             let k = self.curve.random_uint();
+
             let p_1 = curve.g_mul(&k);
             let (x_1, _) = curve.to_affine(&p_1);
             let x_1 = x_1.to_biguint();
@@ -255,10 +313,10 @@ impl SigCtx {
         if *sk >= *curve.get_n() || *sk == BigUint::zero() {
             panic!("invalid seckey");
         }
-        curve.mul(&sk, &curve.generator())
+        curve.mul(sk, &curve.generator())
     }
 
-    pub fn load_pubkey(&self, buf: &[u8]) -> Result<Point, ()> {
+    pub fn load_pubkey(&self, buf: &[u8]) -> Result<Point, Sm2Error> {
         self.curve.bytes_to_point(buf)
     }
 
@@ -266,13 +324,13 @@ impl SigCtx {
         self.curve.point_to_bytes(p, compress)
     }
 
-    pub fn load_seckey(&self, buf: &[u8]) -> Result<BigUint, ()> {
+    pub fn load_seckey(&self, buf: &[u8]) -> Result<BigUint, Sm2Error> {
         if buf.len() != 32 {
-            return Err(());
+            return Err(Sm2Error::InvalidPrivate);
         }
         let sk = BigUint::from_bytes_be(buf);
         if sk > *self.curve.get_n() {
-            Err(())
+            Err(Sm2Error::InvalidPrivate)
         } else {
             Ok(sk)
         }
@@ -296,6 +354,18 @@ impl Default for SigCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sign() {
+        let string = String::from("abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd");
+        let msg = string.as_bytes();
+
+        let ctx = SigCtx::new();
+        let (pk, sk) = ctx.new_keypair();
+        let signature = ctx.sign(msg, &sk, &pk);
+
+        println!("public key is {}, signature is {}", pk, signature);
+    }
 
     #[test]
     fn test_sign_and_verify() {
@@ -372,5 +442,50 @@ mod tests {
         let sig = Signature::der_decode(&sig).unwrap();
 
         assert!(ctx.verify_raw(msg, &pk, &sig));
+    }
+
+    #[test]
+    fn verify_third_test() {
+        let ctx = SigCtx::new();
+        let msg = "jonllen".to_string().into_bytes();
+
+        let ecc_ctx = EccCtx::new();
+        let pk_bz = hex::decode("044f954d8c4d7c0133e5f402c7e75623438c2dcee5ae5ee6c2f1fca51c60f7017e9cfad13514cd4e7faeca476a98eeb0b8a62c1f6add9794beead4a42291b94278").unwrap();
+        let pk = ecc_ctx.bytes_to_point(&pk_bz).unwrap();
+
+        let sig_bz  = hex::decode("304402207e665a4d2781cb488bd374ccf1c8116e95ad0731c99e1dc36c189fd4daf0cb0202206a7ddd6483db176192b25aba9a92bc4de8b76e2c6d1559965ad06224d0725531").unwrap();
+        let sig = Signature::der_decode(&sig_bz).unwrap();
+
+        assert!(ctx.verify(&msg, &pk, &sig));
+    }
+}
+
+#[cfg(feature = "internal_benches")]
+mod signature_benches {
+    use sm2::signature::SigCtx;
+
+    extern crate test;
+
+    #[bench]
+    fn sign_bench(bench: &mut test::Bencher) {
+        let test_word = b"hello world";
+        let ctx = SigCtx::new();
+        let (pk, sk) = ctx.new_keypair();
+
+        bench.iter(|| {
+            let _ = ctx.sign(test_word, &sk, &pk);
+        });
+    }
+
+    #[bench]
+    fn verify_bench(bench: &mut test::Bencher) {
+        let test_word = b"hello world";
+        let ctx = SigCtx::new();
+        let (pk, sk) = ctx.new_keypair();
+        let sig = ctx.sign(test_word, &sk, &pk);
+
+        bench.iter(|| {
+            let _ = ctx.verify(test_word, &pk, &sig);
+        });
     }
 }
